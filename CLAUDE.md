@@ -85,37 +85,26 @@ Done, checked with `gdalinfo` and pixel reads on 2026-09-07:
 
 - Pipeline steps 1-3: `me_50m.vrt`, `me_3857_anchored.vrt`, `me_3857.tif`
   (47040 x 38668, 3.6 GB, NoData filled with 0, gdalwarp exit 0, 2 min 16 s).
-- Step 4, the warp only: `me_z12.tif` (123082 x 101176, 19.109 m, Float32, 512 px
+- Step 4 complete: `me_z12.tif` (123082 x 101176, 19.109 m, Float32, 512 px
   blocks, 17 GB, 2 min 46 s). Base band verified: centre reads 199-450 m and matches
   `me_3857.tif` at the same ground point; the top-left corner is 0 m (sea).
-- `scripts/build_terrain_pmtiles.py` written (step 5). Not yet run.
+- Step 4 overviews complete: external `me_z12.tif.ovr` (5.1 GB, `gdaladdo -ro`,
+  1 min 26 s). The earlier empty internal levels were removed with `gdaladdo -clean`.
+  Verified all 12 levels: mean 268 m at every level, max 3681 m at level 0 falling
+  smoothly to 1614 m at the 31 x 25 level. None reads as zero.
+- `scripts/build_terrain_pmtiles.py` written (step 5).
 
-**Not done: the overviews are empty.** `gdaladdo` was started on `me_z12.tif` and
-killed at ~80% when the session ended (`z12.log` stops at "80..."). The file lists 12
-internal overview levels, but every one reads as all zeros, including the whole 31 x 25
-level. Do not tile from it as it stands: every zoom below 12 would come out flat sea.
-`terrain.pmtiles` does not exist.
-
-Next: rebuild the overviews, detached so a session end cannot kill them again, verify,
-then run step 5.
+Step 5 was launched detached on 2026-09-07 (`nohup setsid ... > pmtiles.log`):
 
 ```bash
-cd ~/middle-earth
-gdaladdo -clean me_z12.tif          # drop the empty internal levels (metadata only)
-nohup gdaladdo -ro -r average --config GDAL_NUM_THREADS ALL_CPUS \
-  --config COMPRESS_OVERVIEW DEFLATE --config PREDICTOR_OVERVIEW 3 \
-  me_z12.tif 2 4 8 16 32 64 128 256 512 1024 2048 4096 > ovr.log 2>&1 &
+python3 scripts/build_terrain_pmtiles.py me_z12.tif terrain.pmtiles --zooms 0-12
 ```
 
-`-ro` writes external `me_z12.tif.ovr` and never opens the 17 GB base for writing.
-Expect ~6 min. Verify before tiling; the count must be 12 and the max far above 0:
+Check `pmtiles.log` for "done terrain.pmtiles". If it stopped early, `work_terrain/`
+holds per-strip MBTiles; the script does not resume, so rerun it from scratch.
 
-```bash
-python3 -c "from osgeo import gdal; ds=gdal.Open('me_z12.tif'); b=ds.GetRasterBand(1); \
-print(b.GetOverviewCount(), b.GetOverview(11).ReadAsArray().max())"
-```
-
-Then `python3 scripts/build_terrain_pmtiles.py me_z12.tif terrain.pmtiles --zooms 0-12`.
+Next after step 5: verify `terrain.pmtiles` (`pmtiles show`, decode a z12 tile and a
+z4 tile and compare against `me_z12.tif`), then step 6 vectors, then rendering.
 
 ---
 
