@@ -12,3 +12,4 @@ geojson/
 tiles/
 *.log
 __pycache__/
+work_*/
