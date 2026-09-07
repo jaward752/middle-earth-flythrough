@@ -26,8 +26,10 @@
   <label>Vertical exaggeration: <span id="exval">4.0</span>x
     <input id="ex" type="range" min="0" max="10" step="0.5" value="4">
   </label>
-  <label><input id="rivers" type="checkbox" checked> Rivers</label>
-  <label><input id="coast" type="checkbox" checked> Coastline</label>
+  <label><input type="checkbox" data-group="water" checked> Rivers &amp; lakes</label>
+  <label><input type="checkbox" data-group="roads" checked> Roads &amp; walls</label>
+  <label><input type="checkbox" data-group="labels" checked> Labels</label>
+  <label><input type="checkbox" data-group="frodo"> Frodo's route</label>
   <div id="status">loading…</div>
   <div id="err"></div>
   <div id="diag" style="display:none"></div>
@@ -45,61 +47,132 @@
 const ATTRIB = 'Data: Rose, Robert A. (2020), "GIS &amp; Middle Earth", William &amp; Mary Center for ' +
   'Geospatial Analysis, <a href="https://doi.org/10.21220/RKEZ-X707">doi:10.21220/RKEZ-X707</a>, ' +
   'CC BY-NC-SA 4.0. Non-commercial fan project.';
+const BASE = location.origin + location.pathname.replace(/[^/]*$/, '');
+const SERIF = ['libre_baskerville_regular'];
 
 const protocol = new pmtiles.Protocol();
 maplibregl.addProtocol('pmtiles', protocol.tile);
+
+// ---- layers -------------------------------------------------------------
+// Minzoom tiers from CLAUDE.md: z0 Realms/Bays/Islands/Place_Boundaries;
+// z5 Rivers/Roads/Forests/Lakes/Mountains/Swamps; z8 Towns/Fortresses/Harbors/
+// Hills/Valleys/Walls; z10 the rest. Labels for important settlements start
+// earlier than their markers so the map is not empty at z5-7.
+const V = 'vectors';
+const vec = (id, type, layer, extra) => Object.assign({ id, type, source: V, 'source-layer': layer }, extra);
+const lw = (a, b) => ['interpolate', ['linear'], ['zoom'], 5, a, 12, b];
+
+const LINE_ROUND = { 'line-cap': 'round', 'line-join': 'round' };
+
+// Point-of-interest layers that only appear at z10+, with a colour each.
+const POI = [
+  ['buildings', '#5a4632'], ['bridges', '#6b4e2e'], ['fords', '#3b6fa8'], ['falls', '#2f7fbf'],
+  ['doors_gates', '#4a3a5a'], ['cave_entrances', '#333333'], ['graves_tombs', '#555555'],
+];
+
+function label(id, layer, opts) {
+  // Serif label with a light halo. opts: filter, minzoom, maxzoom, size, color,
+  // transform, spacing, offset, anchor, sortKey, group
+  const o = Object.assign({ size: 12, color: '#2b2b2b', halo: 'rgba(255,255,255,0.85)', anchor: 'top',
+                            offset: [0, 0.6], spacing: 0, transform: 'none', sortKey: 5, group: 'labels' }, opts);
+  const l = vec(id, 'symbol', layer, {
+    metadata: { group: o.group },
+    layout: {
+      'text-field': ['get', 'Name'], 'text-font': SERIF, 'text-size': o.size,
+      'text-transform': o.transform, 'text-letter-spacing': o.spacing,
+      'text-anchor': o.anchor, 'text-offset': o.offset, 'text-max-width': 8,
+      'symbol-sort-key': o.sortKey, 'text-padding': 4,
+    },
+    paint: { 'text-color': o.color, 'text-halo-color': o.halo, 'text-halo-width': 1.4, 'text-halo-blur': 0.4 },
+  });
+  if (o.minzoom !== undefined) l.minzoom = o.minzoom;
+  if (o.maxzoom !== undefined) l.maxzoom = o.maxzoom;
+  if (o.filter) l.filter = o.filter;
+  return l;
+}
+
+const layers = [
+  { id: 'sea', type: 'background', paint: { 'background-color': '#8fb3d9' } },
+  vec('land', 'fill', 'coastline', { paint: { 'fill-color': '#d9d2b6' } }),
+  { id: 'relief', type: 'color-relief', source: 'terrain',
+    paint: { 'color-relief-opacity': 0.85, 'color-relief-color': [
+      'interpolate', ['linear'], ['elevation'],
+      0, '#a9c48c', 200, '#c9d59a', 600, '#e2d9a4', 1200, '#c9b083',
+      2000, '#a58a6b', 2800, '#d8d3cc', 3700, '#ffffff'] } },
+  { id: 'hillshade', type: 'hillshade', source: 'terrain',
+    paint: { 'hillshade-exaggeration': 0.6, 'hillshade-shadow-color': '#3a2f1e', 'hillshade-highlight-color': '#ffffff' } },
+
+  // z0 tier
+  vec('realms-fill', 'fill', 'realms', { paint: { 'fill-color': ['match', ['get', 'Name'], 'Gondor', '#4a6fa5', 'Rohan', '#5a8a3a', '#888888'], 'fill-opacity': 0.10 } }),
+  vec('realms-line', 'line', 'realms', { paint: { 'line-color': '#5b4a7a', 'line-width': lw(1, 2.5), 'line-dasharray': [4, 3], 'line-opacity': 0.7 } }),
+  vec('place-boundaries', 'line', 'place_boundaries', { paint: { 'line-color': '#7a6a5a', 'line-width': lw(0.8, 2), 'line-dasharray': [2, 2], 'line-opacity': 0.6 } }),
+  vec('bays', 'fill', 'bays', { paint: { 'fill-color': '#7aa4d4', 'fill-opacity': 0.35 } }),
+  vec('islands', 'line', 'islands', { paint: { 'line-color': '#1f4e79', 'line-width': lw(0.6, 1.5) } }),
+
+  // z5 tier
+  vec('forests', 'fill', 'forests', { minzoom: 5, paint: { 'fill-color': '#3f7a3a', 'fill-opacity': 0.40 } }),
+  vec('swamps', 'fill', 'swamps', { minzoom: 5, paint: { 'fill-color': '#4f8a7a', 'fill-opacity': 0.45 } }),
+  vec('lakes', 'fill', 'lakes', { minzoom: 5, metadata: { group: 'water' }, paint: { 'fill-color': '#6f9fd6', 'fill-outline-color': '#1f4e79' } }),
+  vec('mountains-line', 'line', 'mountains', { minzoom: 5, paint: { 'line-color': '#5a4632', 'line-width': 1, 'line-opacity': 0.25, 'line-dasharray': [1, 2] } }),
+  vec('coastline', 'line', 'coastline', { paint: { 'line-color': '#1f4e79', 'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.6, 12, 2] } }),
+  vec('rivers', 'line', 'rivers', { minzoom: 5, metadata: { group: 'water' }, layout: LINE_ROUND,
+    paint: { 'line-color': '#1d6fd1', 'line-width': ['interpolate', ['linear'], ['zoom'], 5, 1.2, 12, 4] } }),
+  vec('roads', 'line', 'roads', { minzoom: 5, metadata: { group: 'roads' }, layout: LINE_ROUND,
+    paint: { 'line-color': '#7a4a1e', 'line-width': ['interpolate', ['linear'], ['zoom'], 5, 0.8, 12, 3], 'line-dasharray': [3, 1.5] } }),
+  vec('frodo-route', 'line', 'frodo_route', { minzoom: 3, metadata: { group: 'frodo' }, layout: Object.assign({ visibility: 'none' }, LINE_ROUND),
+    paint: { 'line-color': '#c8102e', 'line-width': ['interpolate', ['linear'], ['zoom'], 3, 1.5, 12, 4], 'line-dasharray': [2, 1.5] } }),
+
+  // z8 tier
+  vec('hills', 'line', 'hills', { minzoom: 8, paint: { 'line-color': '#8a6a3a', 'line-width': 0.8, 'line-opacity': 0.5 } }),
+  vec('valleys', 'line', 'valleys', { minzoom: 8, paint: { 'line-color': '#6a7a4a', 'line-width': 0.8, 'line-opacity': 0.5, 'line-dasharray': [3, 2] } }),
+  vec('walls', 'line', 'walls', { minzoom: 8, metadata: { group: 'roads' }, paint: { 'line-color': '#2b2b2b', 'line-width': lw(1.5, 4) } }),
+  vec('harbors-pt', 'circle', 'harbors', { minzoom: 8, paint: { 'circle-radius': 3.5, 'circle-color': '#1f4e79', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1 } }),
+  vec('fortresses-pt', 'circle', 'fortresses', { minzoom: 8, paint: { 'circle-radius': 4.5, 'circle-color': '#8b1a1a', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1.2 } }),
+  vec('towns-pt', 'circle', 'towns', { minzoom: 8, paint: {
+    'circle-radius': ['match', ['get', 'rank'], 1, 6, 2, 5, 3, 4, 3],
+    'circle-color': ['match', ['get', 'rank'], 1, '#2b2b2b', 2, '#3b3b3b', '#ffffff'],
+    'circle-stroke-color': '#2b2b2b', 'circle-stroke-width': 1.2 } }),
+
+  // z10 tier
+  vec('fields', 'fill', 'fields', { minzoom: 10, paint: { 'fill-color': '#e8dc7a', 'fill-opacity': 0.45 } }),
+  vec('moria', 'line', 'mountains_of_moria', { minzoom: 10, paint: { 'line-color': '#333333', 'line-width': 1, 'line-dasharray': [2, 1] } }),
+  ...POI.map(([l, c]) => vec(l + '-pt', 'circle', l, { minzoom: 10, paint: { 'circle-radius': 3, 'circle-color': c, 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1 } })),
+
+  // ---- labels (serif) ----
+  label('realm-labels', 'realm_labels', { minzoom: 2, maxzoom: 9, anchor: 'center', offset: [0, 0], transform: 'uppercase',
+    spacing: 0.35, size: ['interpolate', ['linear'], ['zoom'], 2, 14, 6, 30], color: 'rgba(60,40,90,0.75)', halo: 'rgba(255,255,255,0.6)', sortKey: 0 }),
+  label('range-labels', 'mountain_labels', { minzoom: 5, filter: ['==', ['get', 'Type'], 'Range'], anchor: 'center', offset: [0, 0],
+    transform: 'uppercase', spacing: 0.25, size: ['interpolate', ['linear'], ['zoom'], 5, 12, 10, 20], color: '#4a3a2a', halo: 'rgba(255,255,255,0.7)', sortKey: 1 }),
+  label('peak-labels', 'mountain_labels', { minzoom: 8, filter: ['!=', ['get', 'Type'], 'Range'], anchor: 'center', offset: [0, 0],
+    size: 12, color: '#4a3a2a', sortKey: 3 }),
+  label('town-labels-1', 'towns', { minzoom: 4, filter: ['==', ['get', 'rank'], 1], size: ['interpolate', ['linear'], ['zoom'], 4, 13, 10, 20], offset: [0, 0.8], sortKey: 1 }),
+  label('town-labels-2', 'towns', { minzoom: 6, filter: ['==', ['get', 'rank'], 2], size: ['interpolate', ['linear'], ['zoom'], 6, 12, 10, 17], offset: [0, 0.7], sortKey: 2 }),
+  label('town-labels-3', 'towns', { minzoom: 8, filter: ['==', ['get', 'rank'], 3], size: ['interpolate', ['linear'], ['zoom'], 8, 11, 12, 14], sortKey: 3 }),
+  label('town-labels-4', 'towns', { minzoom: 9, filter: ['==', ['get', 'rank'], 4], size: ['interpolate', ['linear'], ['zoom'], 9, 10, 12, 13], color: '#444444', sortKey: 4 }),
+  label('fortress-labels', 'fortresses', { minzoom: 7, size: ['interpolate', ['linear'], ['zoom'], 7, 11, 12, 15], color: '#8b1a1a', sortKey: 2 }),
+  label('harbor-labels', 'harbors', { minzoom: 9, size: 11, color: '#1f4e79', sortKey: 4 }),
+  ...POI.map(([l, c]) => label(l + '-labels', l, { minzoom: 11, size: 11, color: c, sortKey: 6 })),
+];
 
 const EX0 = 4;
 const map = new maplibregl.Map({
   container: 'map',
   style: {
     version: 8,
+    glyphs: BASE + 'fonts/{fontstack}/{range}.pbf',
     sources: {
-      terrain: {
-        type: 'raster-dem',
-        url: 'pmtiles://tiles/terrain.pmtiles',
-        tileSize: 512,
-        encoding: 'mapbox',
-        minzoom: 0,
-        maxzoom: 12,
-        attribution: ATTRIB,
-      },
-      vectors: {
-        type: 'vector',
-        url: 'pmtiles://tiles/vectors.pmtiles',
-        minzoom: 0,
-        maxzoom: 12,
-      },
+      terrain: { type: 'raster-dem', url: 'pmtiles://tiles/terrain.pmtiles', tileSize: 512, encoding: 'mapbox',
+                 minzoom: 0, maxzoom: 12, attribution: ATTRIB },
+      vectors: { type: 'vector', url: 'pmtiles://tiles/vectors.pmtiles', minzoom: 0, maxzoom: 12 },
     },
-    layers: [
-      { id: 'sea', type: 'background', paint: { 'background-color': '#8fb3d9' } },
-      { id: 'land', type: 'fill', source: 'vectors', 'source-layer': 'coastline',
-        paint: { 'fill-color': '#d9d2b6' } },
-      { id: 'relief', type: 'color-relief', source: 'terrain',
-        paint: { 'color-relief-opacity': 0.85, 'color-relief-color': [
-          'interpolate', ['linear'], ['elevation'],
-          0, '#a9c48c', 200, '#c9d59a', 600, '#e2d9a4', 1200, '#c9b083',
-          2000, '#a58a6b', 2800, '#d8d3cc', 3700, '#ffffff'] } },
-      { id: 'hillshade', type: 'hillshade', source: 'terrain',
-        paint: { 'hillshade-exaggeration': 0.6, 'hillshade-shadow-color': '#3a2f1e',
-                 'hillshade-highlight-color': '#ffffff' } },
-      { id: 'coastline', type: 'line', source: 'vectors', 'source-layer': 'coastline',
-        paint: { 'line-color': '#1f4e79', 'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.6, 12, 2] } },
-      { id: 'rivers', type: 'line', source: 'vectors', 'source-layer': 'rivers',
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': '#1d6fd1', 'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.5, 6, 1.5, 12, 4] } },
-    ],
+    layers,
     terrain: location.search.includes('noterrain') ? undefined : { source: 'terrain', exaggeration: EX0 },
   },
-  center: [0, 0],
-  zoom: 4,
-  pitch: 55,
-  bearing: -15,
-  maxPitch: 85,
-  hash: true,
+  center: [0, 0], zoom: 4, pitch: 55, bearing: -15, maxPitch: 85, hash: true,
   attributionControl: { compact: false },
 });
 
+// ---- diagnostics (read by headless --dump-dom) ----
 const diag = document.getElementById('diag');
 const D = (m) => { diag.textContent += m + ' | '; console.log('DIAG', m); };
 try { const gl = document.createElement('canvas').getContext('webgl2'); D('webgl2 ' + (gl ? gl.getParameter(gl.RENDERER) : 'NONE')); } catch (e) { D('webgl2 err ' + e.message); }
@@ -114,9 +187,9 @@ setInterval(() => {
   }
   D('t=' + ((Date.now() - t0) / 1000).toFixed(0) + 's ' + parts.join(' ') + ' styleLoaded=' + map.isStyleLoaded() + ' loaded=' + map.loaded());
 }, 5000);
-map.on('idle', () => D('idle z' + map.getZoom().toFixed(1) + ' terrainTiles=' + (map.style.sourceCaches['terrain'] ? Object.keys(map.style.sourceCaches['terrain']._tiles).length : '?') + ' vecTiles=' + (map.style.sourceCaches['vectors'] ? Object.keys(map.style.sourceCaches['vectors']._tiles).length : '?') + ' loaded=' + map.loaded() + ' hasTerrain=' + !!map.getTerrain()));
 map.on('error', e => D('error ' + (e.error && e.error.message || e.error)));
 window.addEventListener('error', e => D('winerror ' + e.message));
+
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
 
 const status = document.getElementById('status');
@@ -128,15 +201,18 @@ map.on('moveend', () => {
   status.textContent = `z ${map.getZoom().toFixed(2)}  lon ${c.lng.toFixed(3)}  lat ${c.lat.toFixed(3)}  pitch ${map.getPitch().toFixed(0)}`;
 });
 
+// ---- controls ----
 const ex = document.getElementById('ex'), exval = document.getElementById('exval');
 ex.addEventListener('input', () => {
   const v = parseFloat(ex.value); exval.textContent = v.toFixed(1);
   map.setTerrain(v > 0 ? { source: 'terrain', exaggeration: v } : null);
 });
-document.getElementById('rivers').addEventListener('change', e =>
-  map.setLayoutProperty('rivers', 'visibility', e.target.checked ? 'visible' : 'none'));
-document.getElementById('coast').addEventListener('change', e =>
-  map.setLayoutProperty('coastline', 'visibility', e.target.checked ? 'visible' : 'none'));
+for (const cb of document.querySelectorAll('input[data-group]')) {
+  cb.addEventListener('change', () => {
+    for (const l of layers) if (l.metadata && l.metadata.group === cb.dataset.group)
+      map.setLayoutProperty(l.id, 'visibility', cb.checked ? 'visible' : 'none');
+  });
+}
 </script>
 </body>
 </html>

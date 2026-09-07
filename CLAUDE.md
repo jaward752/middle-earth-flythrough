@@ -90,23 +90,40 @@ Done and verified on 2026-09-07 (rendering milestones 1 and 2 pass):
   built in ~15 min). A z12 tile decodes to within 0.05 m of `me_z12.tif`; z0/z4/z8
   tiles carry real relief (z4 max 2315 m), so the overview-based zooms are good.
   `terrain.mbtiles` (3.8 GB) is the intermediate; safe to delete.
-- Step 6, partial: `tiles/vectors.pmtiles` (1.2 MB) with two layers, `rivers`
-  (from Rivers.shp via the -s_srs override) and `coastline`. There is no coastline
-  shapefile (Bays is 4 polygons), so it was derived from the DEM: land = pixels != 0
-  on the 76 m overview (sea is exactly 0 m), polygonized, holes under 1 km^2 dropped,
-  one polygon with 11 rings. Inputs in `work_coast/`, output `geojson/Coastline.geojson`.
-  The other 24 layers are not converted yet.
+- Step 6 complete: `scripts/build_vectors.py` converts all 26 shapefiles plus the
+  DEM-derived `coastline` (land = pixels != 0 on the 76 m overview, sea is exactly
+  0 m; polygonized, holes under 1 km^2 dropped, one polygon with 11 rings; inputs
+  in `work_coast/`) into `geojson/*.geojson`, then tiles everything into
+  `tiles/vectors.pmtiles` (7.3 MB, z0-12, `-r1` so the 73 towns are never thinned).
+  Two derived label layers are added: `realm_labels` and `mountain_labels`, one
+  `ST_PointOnSurface` point per polygon (computed pre-reprojection). `Towns`
+  features get a `rank` 1-4 (1 capital/city-state .. 4 village/hamlet) parsed from
+  the free-text `Type` field, used to size and color both the town marker and
+  its label.
 - `app/index.html`: MapLibre 5.6.0 + pmtiles 4.3.0, both vendored in `app/vendor/`
-  (no CDN). Style: sea background, land fill from the coastline polygon, color-relief
-  hypsometric tint, hillshade, coastline line, rivers line, 3D terrain with a runtime
-  exaggeration slider (default 4x), layer toggles, W&M attribution. `app/tiles` is a
-  symlink to `../tiles`. Declare color-relief in the initial style: adding it with
-  addLayer after load left every terrain tile stuck in "reloading".
-- Verified in headless Windows Chrome (SwiftShader) via screenshots: 2D and pitched
-  3D views render terrain, tint, coastline and rivers aligned; rivers follow valleys.
-  98% of sampled river vertices sit on land (h > 0) in the DEM. The DEM's data
-  boundary shows as a straight diagonal coastline in the north-east because the
-  conic quads do not fill the anchored Mercator rectangle; sea (0 m) fills the rest.
+  (no CDN). All 26 vector layers plus coastline are styled, at the per-layer
+  minzoom tiers from "Quality requirements" below. Labels (Towns, Fortresses,
+  Realms, Mountains) use a vendored serif face, Libre Baskerville, served locally
+  from `app/fonts/libre_baskerville_regular/*.pbf` (downloaded once from
+  `tiles.versatiles.org/assets/glyphs/`, a public MapLibre glyph CDN — not a
+  live dependency, the .pbf files are committed) via `glyphs:` in the style.
+  Town label size/weight scales with `rank`; Realms and mountain Ranges render
+  as uppercase letter-spaced labels; individual peaks are plain serif. Toggle
+  checkboxes group layers by `metadata.group` (water / roads / labels / frodo,
+  the last off by default). Style also has: sea background, land fill from the
+  coastline polygon, color-relief hypsometric tint, hillshade, 3D terrain with a
+  runtime exaggeration slider (default 4x), W&M attribution. `app/tiles` is a
+  symlink to `../tiles`. Declare color-relief in the initial style: adding it
+  with addLayer after load left every terrain tile stuck in "reloading".
+- Verified in headless Windows Chrome (SwiftShader) via screenshots at z4.3 and
+  z6.5: terrain, hypsometric tint, coastline, rivers, roads, realm boundaries
+  (dashed), mountain ranges, and labels all render and align — ROHAN/GONDOR as
+  large uppercase serif, White Mountains/Ered Lithui as range labels, Minas
+  Tirith/Edoras visibly larger than Linhir/Pelargir. Console `#err` empty; tile
+  states settle at `loaded` for both sources. 98% of sampled river vertices sit
+  on land (h > 0) in the DEM. The DEM's data boundary shows as a straight
+  diagonal coastline in the north-east because the conic quads do not fill the
+  anchored Mercator rectangle; sea (0 m) fills the rest.
 
 Serving: `cd app && npx -y serve -l 8080 -S -n .` (`-S` follows the tiles symlink).
 Range requests verified (206). The first byte-range hit on `terrain.pmtiles` takes
@@ -122,9 +139,11 @@ waits real time before capturing. `--virtual-time-budget` and `--timeout` do not
 work here: workers and image decoding stall, or the dump happens immediately.
 The `#diag` div in the page logs tile states every 5 s for `--dump-dom`.
 
-Next: milestone 3 (Roads, Forests, Lakes, Swamps): convert the remaining layers
-with the step 6 loop, rebuild `vectors.pmtiles` with `-L name:file` per layer, add
-styled layers with the per-layer minzooms below.
+Milestones 1-4 pass (terrain, rivers/coastline, roads/forests/lakes/swamps,
+labelled towns/fortresses with zoom-dependent density). Frodo_Route is tiled and
+styled (`frodo` toggle group, off by default) so milestone 6 is effectively done
+too; not yet checked visually against the book route. Next: milestone 5, search
+across place names with fly-to.
 
 ---
 
