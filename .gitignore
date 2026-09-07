@@ -10,3 +10,5 @@ Vector_Shapefiles/
 *.pmtiles
 geojson/
 tiles/
+*.log
+__pycache__/
