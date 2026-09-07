@@ -1,0 +1,12 @@
+Quad1/
+Quad2/
+Quad3/
+Quad4/
+Vector_Shapefiles/
+*.tif
+*.ovr
+*.vrt
+*.mbtiles
+*.pmtiles
+geojson/
+tiles/
