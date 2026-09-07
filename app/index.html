@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Middle-earth flythrough</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="vendor/maplibre-gl.css">
+<style>
+  html, body { margin: 0; height: 100%; background: #0b1a2a; }
+  #map { position: absolute; inset: 0; }
+  #panel {
+    position: absolute; top: 10px; left: 10px; z-index: 1;
+    background: rgba(255,255,255,0.92); padding: 8px 12px; border-radius: 4px;
+    font: 13px/1.4 system-ui, sans-serif; color: #222; min-width: 220px;
+  }
+  #panel label { display: block; margin-top: 4px; }
+  #panel input[type=range] { width: 100%; }
+  #status { color: #666; font-size: 12px; margin-top: 4px; }
+  #err { color: #b00; font-size: 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <div><b>Middle-earth</b></div>
+  <label>Vertical exaggeration: <span id="exval">4.0</span>x
+    <input id="ex" type="range" min="0" max="10" step="0.5" value="4">
+  </label>
+  <label><input id="rivers" type="checkbox" checked> Rivers</label>
+  <label><input id="coast" type="checkbox" checked> Coastline</label>
+  <div id="status">loading…</div>
+  <div id="err"></div>
+  <div id="diag" style="display:none"></div>
+</div>
+
+<script>
+// Headless testing only: ?wait=N holds the document load event open for N ms
+// (see scripts/slow_pixel.py) so headless Chrome waits before screenshotting.
+(() => { const m = location.search.match(/wait=(\d+)/); if (m) {
+  const i = document.createElement('img'); i.src = 'http://localhost:8090/' + m[1]; i.style.display = 'none'; document.body.appendChild(i); } })();
+</script>
+<script src="vendor/maplibre-gl.js"></script>
+<script src="vendor/pmtiles.js"></script>
+<script>
+const ATTRIB = 'Data: Rose, Robert A. (2020), "GIS &amp; Middle Earth", William &amp; Mary Center for ' +
+  'Geospatial Analysis, <a href="https://doi.org/10.21220/RKEZ-X707">doi:10.21220/RKEZ-X707</a>, ' +
+  'CC BY-NC-SA 4.0. Non-commercial fan project.';
+
+const protocol = new pmtiles.Protocol();
+maplibregl.addProtocol('pmtiles', protocol.tile);
+
+const EX0 = 4;
+const map = new maplibregl.Map({
+  container: 'map',
+  style: {
+    version: 8,
+    sources: {
+      terrain: {
+        type: 'raster-dem',
+        url: 'pmtiles://tiles/terrain.pmtiles',
+        tileSize: 512,
+        encoding: 'mapbox',
+        minzoom: 0,
+        maxzoom: 12,
+        attribution: ATTRIB,
+      },
+      vectors: {
+        type: 'vector',
+        url: 'pmtiles://tiles/vectors.pmtiles',
+        minzoom: 0,
+        maxzoom: 12,
+      },
+    },
+    layers: [
+      { id: 'sea', type: 'background', paint: { 'background-color': '#8fb3d9' } },
+      { id: 'land', type: 'fill', source: 'vectors', 'source-layer': 'coastline',
+        paint: { 'fill-color': '#d9d2b6' } },
+      { id: 'relief', type: 'color-relief', source: 'terrain',
+        paint: { 'color-relief-opacity': 0.85, 'color-relief-color': [
+          'interpolate', ['linear'], ['elevation'],
+          0, '#a9c48c', 200, '#c9d59a', 600, '#e2d9a4', 1200, '#c9b083',
+          2000, '#a58a6b', 2800, '#d8d3cc', 3700, '#ffffff'] } },
+      { id: 'hillshade', type: 'hillshade', source: 'terrain',
+        paint: { 'hillshade-exaggeration': 0.6, 'hillshade-shadow-color': '#3a2f1e',
+                 'hillshade-highlight-color': '#ffffff' } },
+      { id: 'coastline', type: 'line', source: 'vectors', 'source-layer': 'coastline',
+        paint: { 'line-color': '#1f4e79', 'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.6, 12, 2] } },
+      { id: 'rivers', type: 'line', source: 'vectors', 'source-layer': 'rivers',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#1d6fd1', 'line-width': ['interpolate', ['linear'], ['zoom'], 0, 0.5, 6, 1.5, 12, 4] } },
+    ],
+    terrain: location.search.includes('noterrain') ? undefined : { source: 'terrain', exaggeration: EX0 },
+  },
+  center: [0, 0],
+  zoom: 4,
+  pitch: 55,
+  bearing: -15,
+  maxPitch: 85,
+  hash: true,
+  attributionControl: { compact: false },
+});
+
+const diag = document.getElementById('diag');
+const D = (m) => { diag.textContent += m + ' | '; console.log('DIAG', m); };
+try { const gl = document.createElement('canvas').getContext('webgl2'); D('webgl2 ' + (gl ? gl.getParameter(gl.RENDERER) : 'NONE')); } catch (e) { D('webgl2 err ' + e.message); }
+map.on('load', () => D('load'));
+const t0 = Date.now();
+setInterval(() => {
+  const parts = [];
+  for (const id of ['terrain', 'vectors']) {
+    const sc = map.style && map.style.sourceCaches[id]; if (!sc) { parts.push(id + ':nocache'); continue; }
+    const st = {}; for (const t of Object.values(sc._tiles)) st[t.state] = (st[t.state] || 0) + 1;
+    parts.push(id + ':' + JSON.stringify(st));
+  }
+  D('t=' + ((Date.now() - t0) / 1000).toFixed(0) + 's ' + parts.join(' ') + ' styleLoaded=' + map.isStyleLoaded() + ' loaded=' + map.loaded());
+}, 5000);
+map.on('idle', () => D('idle z' + map.getZoom().toFixed(1) + ' terrainTiles=' + (map.style.sourceCaches['terrain'] ? Object.keys(map.style.sourceCaches['terrain']._tiles).length : '?') + ' vecTiles=' + (map.style.sourceCaches['vectors'] ? Object.keys(map.style.sourceCaches['vectors']._tiles).length : '?') + ' loaded=' + map.loaded() + ' hasTerrain=' + !!map.getTerrain()));
+map.on('error', e => D('error ' + (e.error && e.error.message || e.error)));
+window.addEventListener('error', e => D('winerror ' + e.message));
+map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+
+const status = document.getElementById('status');
+const err = document.getElementById('err');
+map.on('error', e => { err.textContent += (e.error && e.error.message || e.error || e) + '\n'; });
+map.on('load', () => { status.textContent = 'terrain + vectors loaded'; });
+map.on('moveend', () => {
+  const c = map.getCenter();
+  status.textContent = `z ${map.getZoom().toFixed(2)}  lon ${c.lng.toFixed(3)}  lat ${c.lat.toFixed(3)}  pitch ${map.getPitch().toFixed(0)}`;
+});
+
+const ex = document.getElementById('ex'), exval = document.getElementById('exval');
+ex.addEventListener('input', () => {
+  const v = parseFloat(ex.value); exval.textContent = v.toFixed(1);
+  map.setTerrain(v > 0 ? { source: 'terrain', exaggeration: v } : null);
+});
+document.getElementById('rivers').addEventListener('change', e =>
+  map.setLayoutProperty('rivers', 'visibility', e.target.checked ? 'visible' : 'none'));
+document.getElementById('coast').addEventListener('change', e =>
+  map.setLayoutProperty('coastline', 'visibility', e.target.checked ? 'visible' : 'none'));
+</script>
+</body>
+</html>

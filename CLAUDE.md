@@ -81,30 +81,50 @@ to the equator" under Quality requirements for why, and for the exact offsets.
 
 ## Current state
 
-Done, checked with `gdalinfo` and pixel reads on 2026-09-07:
+Done and verified on 2026-09-07 (rendering milestones 1 and 2 pass):
 
-- Pipeline steps 1-3: `me_50m.vrt`, `me_3857_anchored.vrt`, `me_3857.tif`
-  (47040 x 38668, 3.6 GB, NoData filled with 0, gdalwarp exit 0, 2 min 16 s).
-- Step 4 complete: `me_z12.tif` (123082 x 101176, 19.109 m, Float32, 512 px
-  blocks, 17 GB, 2 min 46 s). Base band verified: centre reads 199-450 m and matches
-  `me_3857.tif` at the same ground point; the top-left corner is 0 m (sea).
-- Step 4 overviews complete: external `me_z12.tif.ovr` (5.1 GB, `gdaladdo -ro`,
-  1 min 26 s). The earlier empty internal levels were removed with `gdaladdo -clean`.
-  Verified all 12 levels: mean 268 m at every level, max 3681 m at level 0 falling
-  smoothly to 1614 m at the 31 x 25 level. None reads as zero.
-- `scripts/build_terrain_pmtiles.py` written (step 5).
+- Pipeline steps 1-4 complete. `me_z12.tif` (123082 x 101176, 19.109 m, 17 GB) with
+  external `me_z12.tif.ovr` (5.1 GB, 12 levels, all verified non-zero: mean 268 m at
+  every level, max 3681 m at level 0 falling to 1614 m at the 31 x 25 level).
+- Step 5 complete: `tiles/terrain.pmtiles` (3.75 GB, PNG 512 px, z0-12, 64373 tiles,
+  built in ~15 min). A z12 tile decodes to within 0.05 m of `me_z12.tif`; z0/z4/z8
+  tiles carry real relief (z4 max 2315 m), so the overview-based zooms are good.
+  `terrain.mbtiles` (3.8 GB) is the intermediate; safe to delete.
+- Step 6, partial: `tiles/vectors.pmtiles` (1.2 MB) with two layers, `rivers`
+  (from Rivers.shp via the -s_srs override) and `coastline`. There is no coastline
+  shapefile (Bays is 4 polygons), so it was derived from the DEM: land = pixels != 0
+  on the 76 m overview (sea is exactly 0 m), polygonized, holes under 1 km^2 dropped,
+  one polygon with 11 rings. Inputs in `work_coast/`, output `geojson/Coastline.geojson`.
+  The other 24 layers are not converted yet.
+- `app/index.html`: MapLibre 5.6.0 + pmtiles 4.3.0, both vendored in `app/vendor/`
+  (no CDN). Style: sea background, land fill from the coastline polygon, color-relief
+  hypsometric tint, hillshade, coastline line, rivers line, 3D terrain with a runtime
+  exaggeration slider (default 4x), layer toggles, W&M attribution. `app/tiles` is a
+  symlink to `../tiles`. Declare color-relief in the initial style: adding it with
+  addLayer after load left every terrain tile stuck in "reloading".
+- Verified in headless Windows Chrome (SwiftShader) via screenshots: 2D and pitched
+  3D views render terrain, tint, coastline and rivers aligned; rivers follow valleys.
+  98% of sampled river vertices sit on land (h > 0) in the DEM. The DEM's data
+  boundary shows as a straight diagonal coastline in the north-east because the
+  conic quads do not fill the anchored Mercator rectangle; sea (0 m) fills the rest.
 
-Step 5 was launched detached on 2026-09-07 (`nohup setsid ... > pmtiles.log`):
+Serving: `cd app && npx -y serve -l 8080 -S -n .` (`-S` follows the tiles symlink).
+Range requests verified (206). The first byte-range hit on `terrain.pmtiles` takes
+~20 s while serve hashes the 3.7 GB file for an ETag; later hits take ~2 ms.
+Open http://localhost:8080/ in a Windows browser. Not committed to git: pmtiles,
+GeoJSON, work dirs (gitignored).
 
-```bash
-python3 scripts/build_terrain_pmtiles.py me_z12.tif terrain.pmtiles --zooms 0-12
-```
+Headless testing from WSL: `scripts/slow_pixel.py 8090` plus `?wait=<ms>` on the
+page URL holds the document load event open, so Windows Chrome
+(`/mnt/c/Program Files/Google/Chrome/Application/chrome.exe --headless=new
+--use-angle=swiftshader --enable-unsafe-swiftshader --screenshot=C:\\... URL`)
+waits real time before capturing. `--virtual-time-budget` and `--timeout` do not
+work here: workers and image decoding stall, or the dump happens immediately.
+The `#diag` div in the page logs tile states every 5 s for `--dump-dom`.
 
-Check `pmtiles.log` for "done terrain.pmtiles". If it stopped early, `work_terrain/`
-holds per-strip MBTiles; the script does not resume, so rerun it from scratch.
-
-Next after step 5: verify `terrain.pmtiles` (`pmtiles show`, decode a z12 tile and a
-z4 tile and compare against `me_z12.tif`), then step 6 vectors, then rendering.
+Next: milestone 3 (Roads, Forests, Lakes, Swamps): convert the remaining layers
+with the step 6 loop, rebuild `vectors.pmtiles` with `-L name:file` per layer, add
+styled layers with the per-layer minzooms below.
 
 ---
 
