@@ -1,124 +1,55 @@
-# FPL Data Pipeline — Stage 1
+# Middle-earth Flythrough
 
-Ingests the [FPL-Core-Insights](https://github.com/olbauday/FPL-Core-Insights)
-dataset into a single DuckDB file, cleaned and shaped for expected-points
-modelling.
+A Google Earth-style 3D map of Tolkien's Middle-earth that runs in the browser. Streamed 3D terrain, a free-flying camera, and 26 labelled map layers, including rivers, roads, realms, towns and Frodo's route.
 
-```bash
-pip install duckdb pandas requests
-python ingest.py      # download + load (~2 min, ~25MB of CSVs)
-python verify.py      # sanity checks — run after every ingest
+Built with Python, GDAL, tippecanoe and MapLibre GL JS. There is no backend: the app is a static page that reads tiles directly from two PMTiles files.
+
+## What it does
+
+- **3D terrain** from a 50 m digital elevation model, with hillshading, elevation colouring and an adjustable vertical exaggeration (default 4x, since 3,700 m peaks across a 2,000 km continent are almost flat at true scale)
+- **26 vector layers** styled at zoom-dependent levels of detail, with a coastline derived from the elevation data
+- **Labels** in a serif face, with towns sized by importance (capital, city, town, village) and realms and mountain ranges in spaced capitals
+- **Layer toggles** for water, roads, labels and Frodo's route
+
+## Data pipeline
+
+The source data is four elevation quadrants (about 1.6 billion pixels in total) and 26 shapefiles, all in a custom Lambert Conformal Conic projection with no EPSG code.
+
+1. **Mosaic** the four elevation quadrants into one raster, handling the `-999` NoData value explicitly so quadrant seams don't become kilometre-deep trenches.
+2. **Re-anchor to the equator.** Web map tiles must be Web Mercator, but at the data's original latitude (37–56°N) Mercator would stretch the north of the map by up to 1.8x. Middle-earth is fictional, so the conic's metres are relabelled as Mercator metres centred on the equator. That keeps the whole map within ±8.65° latitude, where scale error is under 1.2%. This is a metadata-only change, with no resampling.
+3. **Resample** to the exact zoom-12 tile grid (19.1 m per pixel) and build averaged overviews for zooms 0–11.
+4. **Encode terrain tiles** (`scripts/build_terrain_pmtiles.py`). Elevation is resampled as floating point at every zoom and only then packed into Terrain-RGB, because averaging the packed bytes produces garbage. Strips are built in parallel and merged into a single 3.75 GB PMTiles file (z0–12, 64,373 tiles). A z12 tile decodes to within 0.05 m of the source.
+5. **Build vector tiles** (`scripts/build_vectors.py`). The shapefiles get the identical re-anchoring, so they line up with the terrain, and are tiled into a 7.3 MB PMTiles file. Towns are ranked from their free-text type field, and label points are generated for realms and mountain ranges.
+
+## Running it
+
+The tiles are generated from the source data and are not committed (about 4 GB).
+
+1. Download the source data (see Data and licence below) and run the pipeline steps.
+2. Serve the app:
+   ```bash
+   cd app && npx serve -l 8080 -S -n .
+   ```
+3. Open http://localhost:8080/.
+
+## Repository structure
+
+```
+app/index.html                    MapLibre app: style, layers, controls
+app/vendor/                       MapLibre GL JS 5.6.0 and pmtiles 4.3.0 (vendored, no CDN)
+app/fonts/                        Libre Baskerville glyphs for labels
+scripts/build_terrain_pmtiles.py  Terrain-RGB encoding and PMTiles build
+scripts/build_vectors.py          Shapefiles to GeoJSON to vector PMTiles
+scripts/slow_pixel.py             Helper for headless browser screenshot testing
 ```
 
-Output: `fpl.duckdb` (~13MB).
+## Status
 
-## Why DuckDB
+Done: terrain, coastline, rivers, roads, forests, lakes, labelled towns and fortresses, and Frodo's route.
+Next: search across place names with fly-to.
 
-The workload is analytical and single-writer: bulk loads, then wide aggregate
-scans over a few hundred thousand rows. DuckDB is columnar, needs no server,
-lives in one file you can copy or commit, and reads CSV natively. Postgres
-would add operational overhead for no gain at this scale.
+## Data and licence
 
-The SQL is standard, so migrating later — when you add user accounts and
-concurrent web traffic — is mostly a connection-string change. Keep the model
-layer talking to views, not tables, and that migration stays cheap.
+Elevation and vector data: Rose, Robert A. (2020). *GIS & Middle Earth*. William & Mary Center for Geospatial Analysis. DOI [10.21220/RKEZ-X707](https://doi.org/10.21220/RKEZ-X707). Licensed CC BY-NC-SA 4.0: attribution required, no commercial use.
 
-## Data traps this pipeline corrects
-
-Three things silently corrupt naive ingestion of this dataset. Each is handled
-in `ingest.py` and asserted in `verify.py`.
-
-**1. `matches` joins teams on `code`, not `id`.** The upstream README says
-`home_team` links to `teams.id`. It does not — it links to `teams.code`. Both
-are small integers, so joining on `id` produces a fully populated table with
-systematically *wrong* teams attached to every fixture, and nothing errors.
-Check 2 in `verify.py` fails loudly if this regresses.
-
-**2. `matches.csv` mixes competitions.** It contains Champions League, Europa,
-Conference, EFL Cup and friendlies alongside league games. Non-Premier-League
-opponents have no FPL team, so their team reference is NULL. Fitting team
-strength on the unfiltered table blends a Real Madrid fixture into a club's
-league record. Every row is tagged with `competition` and a boolean `is_pl`.
-Filter with `WHERE is_pl` for model fitting; the cup and European rows are
-still useful as fatigue and rotation features.
-
-**3. The league's slug is `prem`, not `premier-league`.** Parsing competition
-from `match_id` with the obvious string silently classifies all 380 league
-fixtures as "other". Verified by asserting exactly 380 league fixtures per
-season.
-
-## Schema
-
-Raw tables mirror the source (`teams`, `players`, `matches`,
-`player_match_stats`, `player_gw_stats`, `gameweeks`), each with a `season`
-column and deduplicated on natural keys — gameweek snapshots are cumulative,
-so the same match appears in many folders.
-
-Four views are the actual interface:
-
-| View | Grain | Purpose |
-|---|---|---|
-| `v_matches` | match | Correct team names, competition tag, Elo, team xG |
-| `v_player_match` | player × match | **The modelling table.** Minutes, xG/xA, defensive actions, CBIT/CBIRT, DefCon outcome, opponent Elo, home/away |
-| `v_team_match` | team × match | Long-format team record — feeds the Poisson clean-sheet model |
-| `v_defcon_rates` | player × season | Empirical DefCon hit rate — prior for the threshold model |
-
-`v_player_match` computes `cbit`, `cbirt`, `hit_defcon` (boolean) and
-`defcon_points` per row. `hit_defcon` is your training target for the DefCon
-component — a binary outcome, not a rate.
-
-## What the data shows
-
-Run `verify.py` for the full output. Three results that shape Stage 2:
-
-**DefCon is a threshold, and linear models get it badly wrong.** Across 3,026
-defender-matches of 60+ minutes in 2025-26, mean CBIT was 7.45 and the true
-expected DefCon return was 0.54 points. Scaling linearly — the approach in
-`thomaszwagerman/fpl-solver` — gives 1.49, overvaluing defenders by 2.8x. The
-error is worst exactly where it matters: a defender recording 19 CBIT scores 2
-points, but a linear model awards 3.8.
-
-**The Poisson clean-sheet model is almost exactly right, and the sigmoid is
-not.** Actual league clean-sheet rate was 0.257 against a mean 1.372 goals
-conceded. `exp(-λ)` predicts 0.254 — within 0.003. The sigmoid used by
-fpl-solver predicts 0.408, a 59% relative overestimate that would inflate
-every defender and goalkeeper in the solver.
-
-**Binary 60-minute assumptions discard real uncertainty.** Only 50.5% of
-forward appearances reached 60 minutes; 43.8% fell in the 1–59 band. Treating
-appearance points as a coin-flip threshold rather than a distribution is the
-single largest avoidable error source for attacking players.
-
-Validation: the top DefCon scorers computed from raw actions — Anderson (52),
-Senesi (52), Tarkowski (44) — match publicly reported 2025-26 figures of 52,
-50 and 44. The 2-point gap on Senesi is worth investigating before trusting
-the column to the decimal; it is likely one match where a substitution or
-scoring edge case differs, but it has not been chased down.
-
-## Known limitations
-
-- **2026-27 has fixtures but no results yet** (season starts 2026-08-15), so
-  `player_match_stats` is empty for it. All model fitting uses 2025-26.
-- **One season of DefCon data.** 2025-26 is the first season with both the rule
-  and per-match action counts, so DefCon priors rest on a single season and
-  should be shrunk toward positional means for low-appearance players.
-- **No live FPL API calls.** Prices, injury news and
-  `chance_of_playing_next_round` move within hours of a deadline; twice-daily
-  CSVs will not catch a late press conference. Add a thin
-  `fantasy.premierleague.com/api/bootstrap-static/` fetch at prediction time.
-- **The upstream match stats are third-party scraped, not official Opta.**
-  Treat `verify.py` as a standing regression test, not a one-off.
-
-## Next
-
-Stage 2 is the model layer, fitted on `v_player_match`:
-
-1. Minutes — multinomial P(0) / P(1–59) / P(60+)
-2. Clean sheets — Poisson on Elo-derived team λ
-3. Goals & assists — xG/xA per 90 scaled by minutes and fixture
-4. DefCon — negative binomial on action counts, then P(count ≥ threshold)
-5. Bonus — rank model for P(top-3 BPS in match)
-6. Saves & goals conceded — Poisson expectations over their thresholds
-
-Then a LightGBM model predicting points directly, as a benchmark for the
-component model to beat.
+This is a non-commercial fan project. Tolkien place names and maps are the intellectual property of the Tolkien Estate.
